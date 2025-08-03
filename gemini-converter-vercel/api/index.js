@@ -12,12 +12,26 @@ app.use(express.json({ limit: '50mb' }));
 
 // --- 路由 ---
 
-// 新增：处理根路径 ("/") 的请求，返回 "Hello World"
+// 处理根路径 ("/") 的请求
 app.get('/', (req, res) => {
     res.status(200).send('Hello World');
 });
 
-// 1. 处理模型列表请求 (/v1/models)
+// --- (*** 核心修改：为 /v1 路径添加处理器 ***) ---
+// 当用户访问 /v1 时，返回一个状态信息
+app.get('/v1', (req, res) => {
+    res.status(200).json({
+        status: 'active',
+        message: 'Gemini to OpenAI proxy is running.',
+        endpoints: [
+            '/v1/models',
+            '/v1/chat/completions'
+        ]
+    });
+});
+
+
+// 处理模型列表请求 (/v1/models)
 app.get('/v1/models', async (req, res) => {
     console.log(`[处理] 收到 /v1/models 请求...`);
     const apiKey = getApiKey(req);
@@ -49,7 +63,7 @@ app.get('/v1/models', async (req, res) => {
     }
 });
 
-// 2. 处理聊天请求 (/v1/chat/completions)
+// 处理聊天请求 (/v1/chat/completions)
 app.post('/v1/chat/completions', async (req, res) => {
     console.log(`[处理] 收到 /v1/chat/completions 请求...`);
     const apiKey = getApiKey(req);
@@ -59,7 +73,6 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     try {
         const openaiRequest = req.body;
-        // 注意：Vercel 的无服务器环境不支持流式响应的直接转换，将以非流式返回
         if (openaiRequest.stream) {
             return res.status(400).json({ error: { message: 'Streaming is not supported in this Vercel deployment.' } });
         }
