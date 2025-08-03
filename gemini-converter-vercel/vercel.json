@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/",
+      "destination": "/api/index"
+    },
+    {
       "source": "/v1/:path*",
       "destination": "/api/index"
     }
