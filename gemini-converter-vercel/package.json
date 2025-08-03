@@ -1,0 +1,14 @@
+{
+  "name": "gemini-openai-vercel-converter",
+  "version": "1.0.0",
+  "description": "A Vercel-hosted service to convert OpenAI API requests to Google Gemini format.",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
