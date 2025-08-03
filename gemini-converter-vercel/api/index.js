@@ -12,6 +12,11 @@ app.use(express.json({ limit: '50mb' }));
 
 // --- 路由 ---
 
+// 新增：处理根路径 ("/") 的请求，返回 "Hello World"
+app.get('/', (req, res) => {
+    res.status(200).send('Hello World');
+});
+
 // 1. 处理模型列表请求 (/v1/models)
 app.get('/v1/models', async (req, res) => {
     console.log(`[处理] 收到 /v1/models 请求...`);
