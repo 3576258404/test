@@ -2,23 +2,22 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 
-// --- 配置 ---
+// --- Configuration ---
 const GEMINI_API_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta';
 const app = express();
 
-// --- 中间件 ---
-app.use(cors()); // 启用 CORS，允许跨域访问
+// --- Middleware ---
+app.use(cors()); // Enable CORS for cross-origin access
 app.use(express.json({ limit: '50mb' }));
 
-// --- 路由 ---
+// --- Routes ---
 
-// 处理根路径 ("/") 的请求
+// Handle root path ("/") requests
 app.get('/', (req, res) => {
     res.status(200).send('Hello World');
 });
 
-// --- (*** 核心修改：为 /v1 路径添加处理器 ***) ---
-// 当用户访问 /v1 时，返回一个状态信息
+// Handle /v1 path requests with a status message
 app.get('/v1', (req, res) => {
     res.status(200).json({
         status: 'active',
@@ -30,10 +29,9 @@ app.get('/v1', (req, res) => {
     });
 });
 
-
-// 处理模型列表请求 (/v1/models)
+// Handle model list requests (/v1/models)
 app.get('/v1/models', async (req, res) => {
-    console.log(`[处理] 收到 /v1/models 请求...`);
+    console.log(`[Handling] Received /v1/models request...`);
     const apiKey = getApiKey(req);
     if (!apiKey) {
         return res.status(401).json({ error: { message: 'Authorization header is missing or invalid.' } });
@@ -52,20 +50,20 @@ app.get('/v1/models', async (req, res) => {
                 owned_by: "google"
             }));
         
-        console.log(`✅ 成功获取并返回了 ${openaiModels.length} 个模型。`);
+        console.log(`✅ Successfully fetched and returned ${openaiModels.length} models.`);
         return res.status(200).json({ "object": "list", "data": openaiModels });
 
     } catch (error) {
-        console.error(`❌ 获取模型列表失败: ${error.message}`);
+        console.error(`❌ Failed to fetch models: ${error.message}`);
         const status = error.response ? error.response.status : 500;
         const message = error.response ? error.response.data : 'Failed to fetch models from Google Gemini API.';
         return res.status(status).json({ error: { message, code: status } });
     }
 });
 
-// 处理聊天请求 (/v1/chat/completions)
+// Handle chat completion requests (/v1/chat/completions)
 app.post('/v1/chat/completions', async (req, res) => {
-    console.log(`[处理] 收到 /v1/chat/completions 请求...`);
+    console.log(`[Handling] Received /v1/chat/completions request...`);
     const apiKey = getApiKey(req);
     if (!apiKey) {
         return res.status(401).json({ error: { message: 'Authorization header is missing or invalid.' } });
@@ -73,30 +71,54 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     try {
         const openaiRequest = req.body;
-        if (openaiRequest.stream) {
-            return res.status(400).json({ error: { message: 'Streaming is not supported in this Vercel deployment.' } });
-        }
-
         const geminiRequest = openaiToGeminiRequest(openaiRequest);
         const model = openaiRequest.model || 'gemini-1.5-flash';
-        const geminiUrl = `${GEMINI_API_ENDPOINT}/models/${model}:generateContent?key=${apiKey}`;
 
-        const response = await axios.post(geminiUrl, geminiRequest, {
-            headers: { 'Content-Type': 'application/json' }
-        });
+        // --- Core Modification: Handle Streaming vs. Non-Streaming ---
+        if (openaiRequest.stream) {
+            const streamSuffix = ':streamGenerateContent';
+            const geminiUrl = `${GEMINI_API_ENDPOINT}/models/${model}${streamSuffix}?key=${apiKey}`;
+            
+            const response = await axios.post(geminiUrl, geminiRequest, {
+                responseType: 'stream'
+            });
 
-        const openaiResponse = geminiToOpenAIResponse(response.data, model);
-        return res.status(200).json(openaiResponse);
+            // Set headers for Server-Sent Events (SSE)
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+            });
+            
+            // Transform and pipe the stream
+            transformGeminiStreamToOpenAIStream(response.data, res, model);
+
+        } else {
+            const streamSuffix = ':generateContent';
+            const geminiUrl = `${GEMINI_API_ENDPOINT}/models/${model}${streamSuffix}?key=${apiKey}`;
+
+            const response = await axios.post(geminiUrl, geminiRequest, {
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const openaiResponse = geminiToOpenAIResponse(response.data, model);
+            return res.status(200).json(openaiResponse);
+        }
 
     } catch (error) {
-        console.error(`❌ 处理聊天请求失败: ${error.message}`);
-        const status = error.response ? error.response.status : 500;
-        const message = error.response ? error.response.data : 'An internal error occurred in the proxy.';
-        return res.status(status).json({ error: { message, code: status } });
+        console.error(`❌ Failed to handle chat request: ${error.message}`);
+        // Ensure stream is ended on error if headers were sent
+        if (res.writable && !res.headersSent) {
+            const status = error.response ? error.response.status : 500;
+            const message = error.response ? error.response.data : 'An internal error occurred in the proxy.';
+            return res.status(status).json({ error: { message, code: status } });
+        } else if (res.writable) {
+            res.end();
+        }
     }
 });
 
-// --- 辅助函数 ---
+// --- Helper Functions ---
 
 function getApiKey(request) {
     const authHeader = request.headers['authorization'];
@@ -146,5 +168,63 @@ function geminiToOpenAIResponse(geminiResponse, model) {
     };
 }
 
-// 导出 app 供 Vercel 使用
+/**
+ * Transforms a Gemini SSE stream to an OpenAI SSE stream and writes it to the response.
+ * @param {Stream} geminiStream - The incoming stream from the Gemini API.
+ * @param {ServerResponse} res - The Express response object.
+ * @param {string} model - The model name used.
+ */
+function transformGeminiStreamToOpenAIStream(geminiStream, res, model) {
+    let buffer = '';
+    const id = `chatcmpl-${Buffer.from(Math.random().toString()).toString('hex').substring(0, 12)}`;
+    const created = Math.floor(Date.now() / 1000);
+
+    geminiStream.on('data', chunk => {
+        buffer += chunk.toString();
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary !== -1) {
+            const jsonString = buffer.substring(0, boundary).replace(/^data: /, '');
+            buffer = buffer.substring(boundary + 2);
+            try {
+                const geminiChunk = JSON.parse(jsonString);
+                const content = geminiChunk.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                if (content) {
+                    const openaiChunk = {
+                        id: id,
+                        object: 'chat.completion.chunk',
+                        created: created,
+                        model: model,
+                        choices: [{ index: 0, delta: { content: content }, finish_reason: null }],
+                    };
+                    res.write(`data: ${JSON.stringify(openaiChunk)}\n\n`);
+                }
+            } catch (e) {
+                // Ignore parsing errors which can happen with incomplete chunks
+            }
+            boundary = buffer.indexOf('\n\n');
+        }
+    });
+
+    geminiStream.on('end', () => {
+        const doneChunk = {
+            id: id,
+            object: 'chat.completion.chunk',
+            created: created,
+            model: model,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        };
+        res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+        res.write(`data: [DONE]\n\n`);
+        res.end();
+    });
+
+    geminiStream.on('error', (err) => {
+        console.error("Stream error:", err);
+        if (!res.writableEnded) {
+            res.end();
+        }
+    });
+}
+
+// Export the app for Vercel
 module.exports = app;
