@@ -2,22 +2,22 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 
-// --- Configuration ---
+// --- 配置 ---
 const GEMINI_API_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta';
 const app = express();
 
-// --- Middleware ---
-app.use(cors()); // Enable CORS for cross-origin access
+// --- 中间件 ---
+app.use(cors()); // 启用 CORS，允许跨域访问
 app.use(express.json({ limit: '50mb' }));
 
-// --- Routes ---
+// --- 路由 ---
 
-// Handle root path ("/") requests
+// 处理根路径 ("/") 的请求
 app.get('/', (req, res) => {
     res.status(200).send('Hello World');
 });
 
-// Handle /v1 path requests with a status message
+// 处理 /v1 路径的请求，返回状态信息
 app.get('/v1', (req, res) => {
     res.status(200).json({
         status: 'active',
@@ -29,9 +29,9 @@ app.get('/v1', (req, res) => {
     });
 });
 
-// Handle model list requests (/v1/models)
+// 处理模型列表请求 (/v1/models)
 app.get('/v1/models', async (req, res) => {
-    console.log(`[Handling] Received /v1/models request...`);
+    console.log(`[处理] 收到 /v1/models 请求...`);
     const apiKey = getApiKey(req);
     if (!apiKey) {
         return res.status(401).json({ error: { message: 'Authorization header is missing or invalid.' } });
@@ -50,20 +50,20 @@ app.get('/v1/models', async (req, res) => {
                 owned_by: "google"
             }));
         
-        console.log(`✅ Successfully fetched and returned ${openaiModels.length} models.`);
+        console.log(`✅ 成功获取并返回了 ${openaiModels.length} 个模型。`);
         return res.status(200).json({ "object": "list", "data": openaiModels });
 
     } catch (error) {
-        console.error(`❌ Failed to fetch models: ${error.message}`);
+        console.error(`❌ 获取模型列表失败: ${error.message}`);
         const status = error.response ? error.response.status : 500;
         const message = error.response ? error.response.data : 'Failed to fetch models from Google Gemini API.';
         return res.status(status).json({ error: { message, code: status } });
     }
 });
 
-// Handle chat completion requests (/v1/chat/completions)
+// 处理聊天请求 (/v1/chat/completions)
 app.post('/v1/chat/completions', async (req, res) => {
-    console.log(`[Handling] Received /v1/chat/completions request...`);
+    console.log(`[处理] 收到 /v1/chat/completions 请求...`);
     const apiKey = getApiKey(req);
     if (!apiKey) {
         return res.status(401).json({ error: { message: 'Authorization header is missing or invalid.' } });
@@ -74,7 +74,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         const geminiRequest = openaiToGeminiRequest(openaiRequest);
         const model = openaiRequest.model || 'gemini-1.5-flash';
 
-        // --- Core Modification: Handle Streaming vs. Non-Streaming ---
         if (openaiRequest.stream) {
             const streamSuffix = ':streamGenerateContent';
             const geminiUrl = `${GEMINI_API_ENDPOINT}/models/${model}${streamSuffix}?key=${apiKey}`;
@@ -83,14 +82,12 @@ app.post('/v1/chat/completions', async (req, res) => {
                 responseType: 'stream'
             });
 
-            // Set headers for Server-Sent Events (SSE)
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
             });
             
-            // Transform and pipe the stream
             transformGeminiStreamToOpenAIStream(response.data, res, model);
 
         } else {
@@ -106,8 +103,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
 
     } catch (error) {
-        console.error(`❌ Failed to handle chat request: ${error.message}`);
-        // Ensure stream is ended on error if headers were sent
+        console.error(`❌ 处理聊天请求失败: ${error.message}`);
         if (res.writable && !res.headersSent) {
             const status = error.response ? error.response.status : 500;
             const message = error.response ? error.response.data : 'An internal error occurred in the proxy.';
@@ -118,7 +114,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 });
 
-// --- Helper Functions ---
+// --- 辅助函数 ---
 
 function getApiKey(request) {
     const authHeader = request.headers['authorization'];
@@ -148,8 +144,19 @@ function openaiToGeminiRequest(openaiRequest) {
     return geminiRequest;
 }
 
+/**
+ * 将 Gemini 的完整响应转换为 OpenAI 格式，并处理空内容
+ * @param {object} geminiResponse 
+ * @param {string} model 
+ * @returns {object}
+ */
 function geminiToOpenAIResponse(geminiResponse, model) {
-    const content = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    // --- 核心修改：检查内容是否为空 ---
+    let content = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!content.trim()) {
+        content = '喵~'; // 如果内容为空或只包含空白，则替换
+    }
+
     return {
         id: `chatcmpl-${Buffer.from(Math.random().toString()).toString('hex').substring(0, 12)}`,
         object: 'chat.completion',
@@ -169,15 +176,16 @@ function geminiToOpenAIResponse(geminiResponse, model) {
 }
 
 /**
- * Transforms a Gemini SSE stream to an OpenAI SSE stream and writes it to the response.
- * @param {Stream} geminiStream - The incoming stream from the Gemini API.
- * @param {ServerResponse} res - The Express response object.
- * @param {string} model - The model name used.
+ * 将 Gemini 的流式响应转换为 OpenAI 格式，并处理空内容
+ * @param {Stream} geminiStream 
+ * @param {ServerResponse} res 
+ * @param {string} model 
  */
 function transformGeminiStreamToOpenAIStream(geminiStream, res, model) {
     let buffer = '';
     const id = `chatcmpl-${Buffer.from(Math.random().toString()).toString('hex').substring(0, 12)}`;
     const created = Math.floor(Date.now() / 1000);
+    let hasSentContent = false; // 标记是否已发送过任何有效内容
 
     geminiStream.on('data', chunk => {
         buffer += chunk.toString();
@@ -189,6 +197,7 @@ function transformGeminiStreamToOpenAIStream(geminiStream, res, model) {
                 const geminiChunk = JSON.parse(jsonString);
                 const content = geminiChunk.candidates?.[0]?.content?.parts?.[0]?.text || '';
                 if (content) {
+                    hasSentContent = true; // 标记已发送有效内容
                     const openaiChunk = {
                         id: id,
                         object: 'chat.completion.chunk',
@@ -199,13 +208,26 @@ function transformGeminiStreamToOpenAIStream(geminiStream, res, model) {
                     res.write(`data: ${JSON.stringify(openaiChunk)}\n\n`);
                 }
             } catch (e) {
-                // Ignore parsing errors which can happen with incomplete chunks
+                // 忽略可能因数据块不完整导致的解析错误
             }
             boundary = buffer.indexOf('\n\n');
         }
     });
 
     geminiStream.on('end', () => {
+        // --- 核心修改：在流结束时检查是否发送过内容 ---
+        if (!hasSentContent) {
+            // 如果整个流都没有发送任何内容，则发送 "喵~"
+            const meowChunk = {
+                id: id,
+                object: 'chat.completion.chunk',
+                created: created,
+                model: model,
+                choices: [{ index: 0, delta: { content: '喵~' }, finish_reason: null }],
+            };
+            res.write(`data: ${JSON.stringify(meowChunk)}\n\n`);
+        }
+
         const doneChunk = {
             id: id,
             object: 'chat.completion.chunk',
@@ -226,5 +248,5 @@ function transformGeminiStreamToOpenAIStream(geminiStream, res, model) {
     });
 }
 
-// Export the app for Vercel
+// 导出 app 供 Vercel 或其他 Node.js 环境使用
 module.exports = app;
